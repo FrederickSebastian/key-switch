@@ -43,6 +43,14 @@ Key Switch は、さまざまなプロバイダーの API Key を一元管理す
 
 [最新リリースをダウンロード](https://github.com/ThirteenAsh/key-switch/releases)
 
+#### ターミナル版（TUI）
+
+Windows または Linux のローカルデスクトップ端末でプロバイダーと Key を管理できます。検索、利用可否の確認、コピーに対応しています。
+
+TUI はデスクトップ版とデータおよびシステムのキーリングを共有します。同時には起動できません。使用前にデスクトップ版を更新し、旧版を終了してください。
+
+[ビルドと使い方（English）](./development.en.md#10-shared-core-and-tui)
+
 #### 開発ドキュメント
 
 [開発ガイドを読む（English）](./development.en.md)

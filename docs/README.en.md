@@ -43,6 +43,14 @@ Select a provider in the left sidebar and manage its Keys on the right, with dra
 
 [Download the latest release](https://github.com/ThirteenAsh/key-switch/releases)
 
+#### Terminal App (TUI)
+
+Manage providers and Keys in a local desktop terminal on Windows or Linux, with search, availability checks, and copying.
+
+The TUI shares data and the system keyring with the desktop app. Run one at a time, and upgrade and close older desktop versions before using the TUI.
+
+[Build and usage guide](./development.en.md#10-shared-core-and-tui)
+
 #### Development Documentation
 
 [Read the development guide](./development.en.md)

@@ -2,6 +2,14 @@
 
 Key Switch 是一款本地 API Key 管理桌面应用。v1.1.0 重构主页面和设置导航，让供应商与 Key 的管理更紧凑。
 
+### TUI 与互斥运行
+
+- 新增 Windows x64 / Linux x64 TUI，使用同一数据目录和系统密钥库。下载 `key-switch-tui-v{{VERSION}}-windows-x64.zip` 或 `key-switch-tui-v{{VERSION}}-linux-x64.tar.gz`，解压后在本地桌面终端执行。
+- 升级后的桌面端和 TUI 同一用户只能运行一个实例，第二个实例提示并退出。
+- **使用前必须升级桌面端并关闭所有旧实例。旧版本不参与互斥锁协议。**
+- Linux 需要可用且已解锁的 Secret Service，以及 X11 / Wayland 桌面剪贴板。暂不支持 SSH、无桌面 Linux、WSL 或 macOS TUI。
+- TUI 支持四种语言、供应商和 Key 管理、搜索、排序、检测及复制；不提供图片编辑、设置编辑或自动更新。
+
 ### 改进
 
 - 主页面改为左侧供应商列表、右侧对应 Key 的布局，支持拖动排序、键盘调整顺序和供应商切换动画。

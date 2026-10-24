@@ -38,17 +38,16 @@ npm run build
 npm run test:frontend
 
 # Rust 格式、編譯與測試
-cd src-tauri
 cargo fmt --all -- --check
-cargo check --locked
-cargo test --locked
+cargo check --workspace --locked
+cargo test --workspace --locked
 ```
 
 提交涉及前後端協定、設定檔或安全邏輯的變更前，必須同時執行前端建置與 Rust 測試。
 
 ### 版本與發布
 
-目前應用程式版本為 `1.1.0`。更新版本時同步 `package.json`、`package-lock.json` 根套件版本、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock` 的應用套件版本、`src-tauri/tauri.conf.json` 及 Windows WiX 版本，並更新四份 README 版本徽章與發布流程預設標籤。
+目前應用程式版本為 `1.1.0`。更新版本時同步 `package.json`、`package-lock.json` 根套件版本、`src-tauri/Cargo.toml`、`Cargo.lock` 的應用套件版本、`src-tauri/tauri.conf.json` 及 Windows WiX 版本，並更新四份 README 版本徽章與發布流程預設標籤。
 
 介面版本回退值讀取 `package.json`，Rust 請求標頭使用 `CARGO_PKG_VERSION`；不再個別維護版本字串。實際桌面版本仍以 Tauri 回傳的資訊為準。
 
@@ -64,7 +63,9 @@ CI 與發布建置使用 Node.js 22，執行 `npm run test:frontend`。發布標
 | `src/stores/` | Pinia 狀態、業務操作和設定持久化佇列 |
 | `src/i18n/` | 語言解析、Vue I18n 初始化、錯誤翻譯和四套語言資源 |
 | `src/data/` | 內建供應商目錄等非敏感靜態資料 |
-| `src-tauri/src/` | Rust 命令、本機檔案、密鑰庫、網路檢測和更新能力 |
+| `src-tauri/src/` | 桌面命令、視窗、主題、更新與系統適配 |
+| `crates/key-switch-core/` | 共用業務核心、持久化、認證與檢測 |
+| `crates/key-switch-tui/` | 終端互動、背景工作與剪貼簿適配 |
 | `src-tauri/capabilities/` | Tauri 最小權限宣告 |
 | `docs/` | 專案開發文件和 README 資源 |
 
@@ -194,4 +195,38 @@ CI 與發布建置使用 Node.js 22，執行 `npm run test:frontend`。發布標
 - 資料模型變更：不得無提示改寫使用者既有名稱、備註或其他業務資料。
 - 安全變更：確認敏感資訊不會寫入前端持久化、設定檔或日誌。
 - 文件變更：同步 `development.md`、`development.en.md` 和 `development.zh-TW.md`。
-- 完成後至少執行 `npm run build`、`cargo fmt --all -- --check`、`cargo check --locked` 和 `cargo test --locked`。
+- 完成後至少執行 `npm run build`、`cargo fmt --all -- --check`、`cargo check --workspace --locked` 和 `cargo test --workspace --locked`。
+
+## 10. 共用核心與 TUI
+
+根 Cargo workspace 包含 `src-tauri`、`crates/key-switch-core` 與 `crates/key-switch-tui`，共用根 `Cargo.lock`，產物位於根 `target/`。核心負責模型、交易、持久化、系統金鑰庫、網路檢測及安全日誌，不依賴 Tauri 或終端函式庫；桌面保留命令協定、視窗、主題及更新適配。非圖形供應商目錄來自 `crates/key-switch-core/provider-catalog.json`，Vue 維護圖片映射。
+
+在儲存庫根目錄獨立建置與執行：
+
+```bash
+cargo run -p key-switch-tui --locked
+cargo build -p key-switch-tui --release --locked
+cargo test -p key-switch-core -p key-switch-tui --locked
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+node scripts/check-versions.mjs
+```
+
+TUI 支援 Windows x64 與 Linux x64 本機桌面終端，獨立建置無需 WebView。Linux 執行需要可用且已解鎖的 Secret Service 與 X11 / Wayland 剪貼簿，Windows 使用系統認證管理員。沿用 keyring v1 原生預設後端及 service `com.app.key-switch`，沒有明文回退。不支援 SSH、無桌面 Linux、WSL、macOS TUI、圖片編輯、設定編輯或自動更新。arboard 啟用 `wayland-data-control`；compositor 必須提供此協定或可用的 XWayland 剪貼簿。執行期間保持剪貼簿連線，結束後的保留由桌面剪貼簿管理員決定。
+
+Windows MSVC 建置的 TUI 需要 Microsoft Visual C++ x64 執行階段（包括 `VCRUNTIME140.dll`）；獨立壓縮檔不包含執行階段安裝程式。
+
+兩端資料路徑一致：Windows Roaming AppData 下的 `com.app.key-switch`；Linux 為 `$XDG_DATA_HOME/com.app.key-switch`，未設定時為 `~/.local/share/com.app.key-switch`。核心接受明確目錄，TUI 使用與 Tauri 相同的 dirs 解析規則，沒有獨立資料目錄選項。
+
+啟動先取得 `key-switch.lock` 的 OS 非阻塞獨佔鎖，再初始化設定、還原業務檔案與存取認證。桌面設定 `create: false`，取得鎖後才建立主視窗；TUI 之後才進入原始模式。第二個執行個體顯示本地化提示並結束；鎖不可用則回報啟動失敗。不刪除、截斷或替換鎖檔，正常結束或崩潰由 OS 釋放鎖。**舊版桌面沒有此協定，使用 TUI 前必須升級並關閉舊執行個體。**
+
+業務操作共用單進程交易鎖，設定與日誌保留各自鎖。網路檢測在交易外執行，完成後核對 Key 身分、認證引用、供應商設定與進程內檢測代次，只合併有效結果。舊快照不覆蓋備註、新增、刪除或順序；新檢測、替換認證與修改設定使舊結果失效。排序必須提交全部供應商 ID 的無重複完整排列。
+
+中繼資料使用同步暫存檔及備份替換，還原驗證 JSON，拒絕損壞的主檔；主檔缺失時選擇完整暫存檔或備份。Unix 另同步目錄；Windows 同步檔案並在同目錄重新命名，不承諾斷電時目錄項目的持久性。`key-switch-transaction.json` 只記錄非敏感前後中繼資料及認證 ID，完整 Key 與備份只在金鑰庫。新增與替換使用隨機認證 ID，保留舊 Key ID 相容；刪除與替換先在金鑰庫備份。失敗嘗試復原，中斷後依中繼資料提交狀態清理或還原。復原或還原失敗回傳明確錯誤，保留還原檔案並阻擋後續業務操作，請勿手動刪除。金鑰庫永久失效時無法保證自動還原。
+
+快捷鍵：方向鍵選擇、Tab / Enter 切換、`n` 新增、`e` 編輯、`d` 刪除確認、`b` 內建供應商、`/` 搜尋、`s` 切換依備註的 Key 顯示排序、`Alt+↑/↓` 儲存供應商順序（搜尋時停用）、`c` 複製、`t` 檢測 Key、`a` 檢測供應商、`r` 重試載入、`q` / Escape 結束或清除搜尋。表單使用 Tab / 方向鍵切換欄位、左右移動游標、Enter 儲存與 Escape 取消。Key 隱藏顯示，只保留於短暫輸入與操作緩衝區；複製只回傳完成狀態。工作在背景執行，忙碌時停用修改。TUI 讀取共用語言偏好，支援簡中、繁中、英文、日文，不修改主題或其他設定。終端守衛與 panic hook 還原終端；外部強制終止無法保證執行解構。
+
+CI 保留桌面與導覽回歸，新增 Windows / Linux 獨立核心與 TUI 檢查，無 WebView 依賴。發布流程先建立一份草稿 Release，保留桌面平台產物；TUI 上傳 `key-switch-tui-v<版本>-windows-x64.zip` 或 `key-switch-tui-v<版本>-linux-x64.tar.gz`，不產生 updater 清單。目前仍為 `1.1.0`，實際發布前依統一版本檢查更新，功能分支不直接發布。
+
+自動測試使用模擬認證及子進程，不讀取真實認證。Windows 10 / 11 與 Linux X11 / Wayland 的兩端交替、金鑰庫、剪貼簿、中文輸入、四語言與終端還原仍需實機驗收；編譯與模擬測試不能替代。
+
+原生錯誤翻譯透過 `node scripts/sync-native-errors.mjs` 從桌面四套翻譯產生，`npm run test:frontend` 檢查兩端一致性。

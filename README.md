@@ -42,6 +42,14 @@ Key Switch 是一个本地 API Key 管理桌面应用，用于集中管理不同
 
 [下载最新版本](https://github.com/ThirteenAsh/key-switch/releases)
 
+#### 终端版（TUI）
+
+在 Windows 或 Linux 的本地桌面终端中管理供应商和 Key，支持搜索、检测与复制。
+
+TUI 与桌面端共享数据和系统密钥库，两端不能同时运行。使用前请升级并关闭旧版桌面端。
+
+[构建与使用说明](./docs/development.md#10-共享核心与-tui)
+
 #### 二次开发文档
 
 [查看开发文档](./docs/development.md)

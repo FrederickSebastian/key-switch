@@ -1,0 +1,4 @@
+[workspace]
+members = ["src-tauri", "crates/key-switch-core", "crates/key-switch-tui"]
+default-members = ["crates/key-switch-core", "crates/key-switch-tui"]
+resolver = "2"

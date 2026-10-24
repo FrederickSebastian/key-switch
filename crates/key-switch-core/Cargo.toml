@@ -1,0 +1,20 @@
+[package]
+name = "key-switch-core"
+version = "1.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }
+keyring = "4.1"
+tokio = { version = "1", features = ["net", "time"] }
+fs2 = "0.4"
+uuid = { version = "1", features = ["v4"] }
+dirs = "6"
+sys-locale = "0.3"
+zeroize = "1"
+base64 = "0.22"
+
+[dev-dependencies]
+tempfile = "3"

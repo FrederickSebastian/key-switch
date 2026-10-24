@@ -38,6 +38,10 @@ export const appErrorTranslationKeys = {
   SETTINGS_SAVE_FAILED: "errors.settingsSaveFailed",
   LOG_UNAVAILABLE: "errors.logUnavailable",
   LOG_CLEAR_FAILED: "errors.logClearFailed",
+  TRANSACTION_UNAVAILABLE: "errors.transactionUnavailable",
+  ROLLBACK_FAILED: "errors.rollbackFailed",
+  RECOVERY_FAILED: "errors.recoveryFailed",
+  PROVIDER_INPUT_INVALID: "errors.providerInputInvalid",
   UNKNOWN: "errors.unknown",
 } as const;
 

@@ -21,7 +21,41 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  prepare:
+    name: Prepare draft release
+    if: ${{ github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.release.outputs.release_id }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22.x
+      - run: node scripts/check-versions.mjs
+        env:
+          RELEASE_TAG: ${{ inputs.tag_name || github.ref_name }}
+      - name: Create one draft release
+        id: release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag_name || github.ref_name }}
+        run: |
+          node -e "const fs=require('node:fs');fs.writeFileSync('release-notes.md',fs.readFileSync('.github/release-notes.md','utf8').replaceAll('{{VERSION}}',process.env.RELEASE_TAG.slice(1)));"
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            draft=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" --jq .draft)
+            test "$draft" = true || { echo 'Existing release must be a draft'; exit 1; }
+          else
+            flags=()
+            if [[ "$RELEASE_TAG" == *-* ]]; then flags+=(--prerelease); fi
+            gh release create "$RELEASE_TAG" --target "$GITHUB_SHA" --draft --title "Key Switch $RELEASE_TAG" --notes-file release-notes.md "${flags[@]}"
+          fi
+          release_id=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" --jq .id)
+          echo "release_id=$release_id" >> "$GITHUB_OUTPUT"
+
   publish:
+    needs: prepare
     name: Build ${{ matrix.name }}
     # 手动运行时必须选择 main，避免将 feature 分支内容发布为安装包。
     if: ${{ github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main' }}
@@ -68,7 +102,7 @@ jobs:
       - name: Restore Rust cache
         uses: swatinem/rust-cache@v2
         with:
-          workspaces: ./src-tauri -> target
+          workspaces: . -> target
 
       - name: Install frontend dependencies
         run: npm ci
@@ -79,16 +113,9 @@ jobs:
       - name: Validate release tag matches application version
         env:
           RELEASE_TAG: ${{ inputs.tag_name || github.ref_name }}
-        run: node -e "const config=require('./src-tauri/tauri.conf.json');if(process.env.RELEASE_TAG!=='v'+config.version){console.error('Release tag must equal v'+config.version);process.exit(1)}"
+        run: node scripts/check-versions.mjs
 
-      - name: Render release notes
-        id: release_notes
-        env:
-          RELEASE_TAG: ${{ inputs.tag_name || github.ref_name }}
-        run: >
-          node -e "const fs=require('node:fs');const version=process.env.RELEASE_TAG.replace(/^v/,'');const body=fs.readFileSync('.github/release-notes.md','utf8').replaceAll('{{VERSION}}',version);fs.appendFileSync(process.env.GITHUB_OUTPUT,'body<<RELEASE_NOTES_EOF\n'+body+'\nRELEASE_NOTES_EOF\n');"
-
-      - name: Build and create GitHub Release
+      - name: Build and upload desktop artifacts
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -96,8 +123,47 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ inputs.tag_name || github.ref_name }}
-          releaseName: Key Switch ${{ inputs.tag_name || github.ref_name }}
-          releaseBody: ${{ steps.release_notes.outputs.body }}
-          releaseDraft: true
-          prerelease: ${{ contains(inputs.tag_name || github.ref_name, '-') }}
+          releaseId: ${{ needs.prepare.outputs.release_id }}
           args: ${{ matrix.args }}
+
+  tui:
+    name: Build TUI ${{ matrix.name }}
+    needs: prepare
+    runs-on: ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x64
+            platform: windows-latest
+          - name: Linux x64
+            platform: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Linux keyring build dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+      - run: cargo build -p key-switch-tui --release --locked
+      - name: Archive Windows TUI
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ inputs.tag_name || github.ref_name }}
+        run: Compress-Archive -LiteralPath target/release/key-switch-tui.exe -DestinationPath "key-switch-tui-${env:RELEASE_TAG}-windows-x64.zip"
+      - name: Archive Linux TUI
+        if: runner.os == 'Linux'
+        env:
+          RELEASE_TAG: ${{ inputs.tag_name || github.ref_name }}
+        run: tar -czf "key-switch-tui-$RELEASE_TAG-linux-x64.tar.gz" -C target/release key-switch-tui
+      - name: Upload TUI to existing draft
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag_name || github.ref_name }}
+        run: |
+          shopt -s nullglob
+          archives=(key-switch-tui-*.zip key-switch-tui-*.tar.gz)
+          test "${#archives[@]}" -eq 1
+          gh release upload "$RELEASE_TAG" "${archives[@]}" --clobber

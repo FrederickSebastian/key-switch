@@ -43,6 +43,9 @@ jobs:
       - name: Type-check and build frontend
         run: npm run build
 
+      - name: Validate workspace versions
+        run: node scripts/check-versions.mjs
+
   rust:
     name: Rust checks
     runs-on: ubuntu-22.04
@@ -62,20 +65,35 @@ jobs:
       - name: Restore Rust cache
         uses: swatinem/rust-cache@v2
         with:
-          workspaces: ./src-tauri -> target
+          workspaces: . -> target
 
       - name: Check Rust formatting
-        working-directory: src-tauri
         run: cargo fmt --all -- --check
 
       - name: Check Rust compilation
-        working-directory: src-tauri
-        run: cargo check --locked
+        run: cargo check --workspace --locked
 
       - name: Run Rust tests
-        working-directory: src-tauri
-        run: cargo test --locked
+        run: cargo test --workspace --locked
 
       - name: Run Clippy
-        working-directory: src-tauri
-        run: cargo clippy --all-targets --all-features --locked -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+  tui:
+    name: Standalone TUI (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-22.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Linux keyring build dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+      - run: cargo check -p key-switch-core -p key-switch-tui --locked
+      - run: cargo test -p key-switch-core -p key-switch-tui --locked
+      - run: cargo clippy -p key-switch-core -p key-switch-tui --all-targets --all-features --locked -- -D warnings
+      - run: cargo build -p key-switch-tui --release --locked

@@ -1,17 +1,22 @@
 <script setup lang="ts">
 import { useI18n } from "vue-i18n";
+import { computed } from "vue";
+import { builtinProviderCatalog } from "../data/providerCatalog";
 import type { ProviderSummary } from "../types/domain";
 
-defineProps<{ provider: Pick<ProviderSummary, "name" | "abbreviation" | "tone" | "logo" | "kind"> }>();
+const props = defineProps<{ provider: Pick<ProviderSummary, "name" | "abbreviation" | "tone" | "logo" | "kind"> & { id?: string } }>();
 const { t } = useI18n();
+const logo = computed(() => props.provider.logo || (props.provider.kind === "builtin"
+  ? builtinProviderCatalog.find(provider => provider.id === props.provider.id)?.logo
+  : undefined));
 </script>
 
 <template>
   <span
     class="provider-avatar"
-    :class="[`provider-avatar--${provider.tone}`, { 'provider-avatar--image': provider.logo }]"
+    :class="[`provider-avatar--${provider.tone}`, { 'provider-avatar--image': logo }]"
   >
-    <img v-if="provider.logo" :class="{ 'provider-avatar__custom-image': provider.kind === 'custom' }" :src="provider.logo" :alt="t('common.providerIconAlt', { name: provider.name })" />
+    <img v-if="logo" :class="{ 'provider-avatar__custom-image': provider.kind === 'custom' }" :src="logo" :alt="t('common.providerIconAlt', { name: provider.name })" />
     <span v-else class="provider-abbr">{{ provider.abbreviation }}</span>
   </span>
 </template>

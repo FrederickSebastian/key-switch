@@ -38,17 +38,16 @@ npm run build
 npm run test:frontend
 
 # Rust 格式、编译和测试
-cd src-tauri
 cargo fmt --all -- --check
-cargo check --locked
-cargo test --locked
+cargo check --workspace --locked
+cargo test --workspace --locked
 ```
 
 提交涉及前后端协议、设置文件或安全逻辑的改动前，必须同时执行前端构建和 Rust 测试。
 
 ### 版本与发布
 
-当前应用版本为 `1.1.0`。更新版本时同步 `package.json`、`package-lock.json` 根包版本、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock` 的应用包版本、`src-tauri/tauri.conf.json` 及 Windows WiX 版本，并更新四份 README 版本徽章与发布流程默认标签。
+当前应用版本为 `1.1.0`。更新版本时同步 `package.json`、`package-lock.json` 根包版本、`src-tauri/Cargo.toml`、`Cargo.lock` 的应用包版本、`src-tauri/tauri.conf.json` 及 Windows WiX 版本，并更新四份 README 版本徽章与发布流程默认标签。
 
 界面版本回退值读取 `package.json`，Rust 请求头使用 `CARGO_PKG_VERSION`；不再单独维护版本字符串。实际桌面版本仍以 Tauri 返回的信息为准。
 
@@ -64,7 +63,9 @@ CI 和发布构建使用 Node.js 22，运行 `npm run test:frontend`。发布标
 | `src/stores/` | Pinia 状态、业务操作和设置持久化队列 |
 | `src/i18n/` | 语言解析、Vue I18n 初始化、错误翻译和四套语言资源 |
 | `src/data/` | 内置供应商目录等非敏感静态数据 |
-| `src-tauri/src/` | Rust 命令、本地文件、密钥库、网络检测和更新能力 |
+| `src-tauri/src/` | 桌面命令、窗口、主题、更新及系统适配 |
+| `crates/key-switch-core/` | 共享业务核心、持久化、凭据和检测 |
+| `crates/key-switch-tui/` | 终端交互、后台任务和剪贴板适配 |
 | `src-tauri/capabilities/` | Tauri 最小权限声明 |
 | `docs/` | 项目开发文档和 README 资源 |
 
@@ -194,4 +195,38 @@ CI 和发布构建使用 Node.js 22，运行 `npm run test:frontend`。发布标
 - 数据模型改动：不得静默改写用户已有名称、备注或其他业务数据。
 - 安全改动：确认敏感信息不会写入前端持久化、设置文件或日志。
 - 文档改动：同步 `development.md`、`development.en.md` 和 `development.zh-TW.md`。
-- 完成后至少运行 `npm run build`、`cargo fmt --all -- --check`、`cargo check --locked` 和 `cargo test --locked`。
+- 完成后至少运行 `npm run build`、`cargo fmt --all -- --check`、`cargo check --workspace --locked` 和 `cargo test --workspace --locked`。
+
+## 10. 共享核心与 TUI
+
+根 Cargo workspace 包含 `src-tauri`、`crates/key-switch-core` 和 `crates/key-switch-tui`，共享根 `Cargo.lock`，构建产物位于根 `target/`。核心负责模型、事务、持久化、系统密钥库、网络检测和安全日志，不依赖 Tauri 或终端库；桌面保留命令协议、窗口、主题和更新适配。非图形供应商目录来自 `crates/key-switch-core/provider-catalog.json`，Vue 单独维护图片映射。
+
+独立构建和运行（在仓库根目录）：
+
+```bash
+cargo run -p key-switch-tui --locked
+cargo build -p key-switch-tui --release --locked
+cargo test -p key-switch-core -p key-switch-tui --locked
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+node scripts/check-versions.mjs
+```
+
+TUI 支持 Windows x64 和 Linux x64 本地桌面终端。独立构建无需 WebView；Linux 运行需要可用且已解锁的 Secret Service 和 X11 / Wayland 剪贴板环境，Windows 使用系统凭据管理器。沿用 keyring v1 默认原生后端和 service `com.app.key-switch`，没有明文回退。不支持 SSH、无桌面 Linux、WSL、macOS TUI、图片编辑、设置编辑或自动更新。arboard 启用 `wayland-data-control`；具体 compositor 必须提供该协议或可用的 XWayland 剪贴板。实例存活期间持有剪贴板连接；退出后的保留由桌面剪贴板管理器决定。
+
+Windows MSVC 构建的 TUI 依赖 Microsoft Visual C++ x64 运行库（包括 `VCRUNTIME140.dll`）；独立压缩包不包含运行库安装程序。
+
+两端使用相同应用目录：Windows Roaming AppData 下的 `com.app.key-switch`，Linux `$XDG_DATA_HOME/com.app.key-switch`，未设置时为 `~/.local/share/com.app.key-switch`。核心接受显式目录，TUI 使用与 Tauri 相同的 dirs 解析规则，不支持单独指定业务目录。
+
+启动先取得 `key-switch.lock` 的 OS 非阻塞独占锁，再初始化设置、恢复业务文件和访问凭据。桌面配置 `create: false`，取得锁后显式创建主窗口；TUI 取得锁后才进入原始模式。第二实例显示本地化提示退出，锁不可用则报告启动失败。锁文件不删除、不截断、不替换；正常退出或崩溃后由 OS 释放。**旧版桌面端没有此协议，首次使用 TUI 前必须升级并关闭旧实例。**
+
+业务操作使用单进程事务锁，设置和日志保留各自锁。网络检测在事务外执行，完成后以 Key 身份、凭据引用、供应商配置及进程内检测代次核对，仅合并有效状态结果。备注、新增、删除和排序不会被旧网络快照覆盖；较新检测、凭据替换及配置改变使旧结果失效。排序必须提交完整且无重复的供应商 ID 排列。
+
+元数据写入临时文件并同步，再通过备份替换。启动恢复验证 JSON，拒绝损坏的主文件，缺少主文件时选择完整临时文件或备份。Unix 另外同步目录；Windows 使用文件同步和同目录重命名，不承诺断电时目录项的持久性。凭据操作用 `key-switch-transaction.json` 记录非敏感前后元数据和凭据 ID；完整 Key 及备份只在密钥库中。创建与替换使用随机凭据 ID，保留旧 Key ID 兼容；删除和替换先在密钥库备份。失败尝试回滚，中断后按元数据提交状态继续清理或恢复。回滚或恢复失败返回明确错误，保留恢复文件，阻止后续业务操作；不要手动删除恢复文件。密钥库永久失效时不能承诺自动恢复。
+
+TUI 快捷键：方向键选择，Tab / Enter 切换面板，`n` 新建，`e` 编辑，`d` 删除确认，`b` 添加内置供应商，`/` 搜索，`s` 按备注切换 Key 展示排序，`Alt+↑/↓` 保存供应商顺序（搜索时禁用），`c` 复制，`t` 检测当前 Key，`a` 检测当前供应商，`r` 重试加载，`q` / Escape 退出或清除搜索。表单用 Tab / 方向键切换字段、左右移动光标、Enter 保存、Escape 取消。Key 值隐藏显示，只保留在短暂输入和操作缓冲中；复制仅返回完成状态。任务在后台线程执行，忙碌时禁用修改。TUI 读取共享语言偏好，支持简中、繁中、英语和日语，不修改主题或其他设置。终端守卫和 panic hook 恢复终端，外部强制终止无法保证运行析构。
+
+CI 保留桌面与导航回归，新增 Windows / Linux 独立核心和 TUI 检查，无 WebView 依赖。发布流程统一创建草稿 Release，桌面原有平台产物保持，TUI 上传 `key-switch-tui-v<版本>-windows-x64.zip` 或 `key-switch-tui-v<版本>-linux-x64.tar.gz`，不生成 updater 清单。当前项目版本仍是 `1.1.0`，实际发布前按统一版本检查更新，开发分支不直接发布。
+
+自动测试使用模拟凭据和独立子进程，不读取真实凭据。真实 Windows 10 / 11、Linux X11 / Wayland 的两端交替运行、系统密钥库、剪贴板、中文输入、四语言和终端恢复仍需平台验收；编译与模拟测试不能替代这些实测。
+
+原生错误翻译通过 `node scripts/sync-native-errors.mjs` 从桌面四套翻译生成，`npm run test:frontend` 检查两端一致性。

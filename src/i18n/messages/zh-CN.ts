@@ -190,6 +190,7 @@ const zhCN = {
     saveKey: "保存 Key",
     saveChanges: "保存修改",
     errors: {
+
       keyRequired: "请输入 API Key",
       noChanges: "请修改备注或输入新的 API Key",
     },
@@ -228,6 +229,7 @@ const zhCN = {
       hostWarning: "检测时，完整 API Key 将发送到 {host}。",
     },
     errors: {
+
       selectBuiltin: "请选择一个内置供应商",
       nameRequired: "请输入供应商名称",
       platformUrlRequired: "请输入平台管理地址",
@@ -271,6 +273,11 @@ const zhCN = {
     failed: "更新下载失败，请稍后重试",
   },
   errors: {
+    transactionUnavailable: "业务锁不可用，请重启应用。",
+    rollbackFailed: "回滚失败。请重启应用恢复数据；勿手动删除恢复文件。",
+    recoveryFailed: "数据恢复未完成。请检查系统密钥库和目录权限后重试。",
+    providerInputInvalid: "供应商网址或图片无效。",
+
     desktopRequired: "请在桌面应用中使用本地数据功能",
     dataDirectoryUnavailable: "无法读取应用数据目录",
     logDirectoryUnavailable: "无法读取日志目录",

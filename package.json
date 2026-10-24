@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
-    "test:frontend": "node tests/navigation.test.mjs",
+    "test:frontend": "node tests/navigation.test.mjs && node scripts/sync-native-errors.mjs --check",
     "preview": "vite preview",
     "tauri:build": "tauri -- build",
     "tauri:dev": "tauri dev"

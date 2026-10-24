@@ -38,17 +38,16 @@ npm run build
 npm run test:frontend
 
 # Format, compile, and test Rust
-cd src-tauri
 cargo fmt --all -- --check
-cargo check --locked
-cargo test --locked
+cargo check --workspace --locked
+cargo test --workspace --locked
 ```
 
 Changes to frontend/backend contracts, the settings file, or security-sensitive logic must pass both the frontend build and Rust tests before being submitted.
 
 ### Versioning and releases
 
-The current application version is `1.1.0`. Version changes must update `package.json`, root package versions in `package-lock.json`, `src-tauri/Cargo.toml`, the application entry in `src-tauri/Cargo.lock`, `src-tauri/tauri.conf.json` including the Windows WiX version, all four README badges, and the default release workflow tag.
+The current application version is `1.1.0`. Version changes must update `package.json`, root package versions in `package-lock.json`, `src-tauri/Cargo.toml`, the application entry in `Cargo.lock`, `src-tauri/tauri.conf.json` including the Windows WiX version, all four README badges, and the default release workflow tag.
 
 UI fallback versions come from `package.json`; Rust request headers use `CARGO_PKG_VERSION` instead of separate version strings. The running desktop version still comes from Tauri.
 
@@ -64,7 +63,9 @@ CI and release builds use Node.js 22 and run `npm run test:frontend`. The releas
 | `src/stores/` | Pinia state, business operations, and the settings persistence queue |
 | `src/i18n/` | Locale resolution, Vue I18n setup, error translation, and four message sets |
 | `src/data/` | Non-sensitive static data such as the built-in provider catalog |
-| `src-tauri/src/` | Rust commands, local files, credential storage, network checks, and updates |
+| `src-tauri/src/` | Desktop commands, windows, theme, updates, and system adapters |
+| `crates/key-switch-core/` | Shared business core, persistence, credentials, and checks |
+| `crates/key-switch-tui/` | Terminal interaction, background jobs, and clipboard adapter |
 | `src-tauri/capabilities/` | Least-privilege Tauri capability declarations |
 | `docs/` | Development documentation and README assets |
 
@@ -194,4 +195,38 @@ Development rules:
 - Data model changes: never silently rewrite existing names, notes, or other user data.
 - Security changes: confirm sensitive values cannot reach frontend persistence, settings files, or logs.
 - Documentation changes: keep `development.md`, `development.en.md`, and `development.zh-TW.md` synchronized.
-- At minimum, run `npm run build`, `cargo fmt --all -- --check`, `cargo check --locked`, and `cargo test --locked`.
+- At minimum, run `npm run build`, `cargo fmt --all -- --check`, `cargo check --workspace --locked`, and `cargo test --workspace --locked`.
+
+## 10. Shared core and TUI
+
+The root Cargo workspace includes `src-tauri`, `crates/key-switch-core` and `crates/key-switch-tui`, with one root `Cargo.lock` and root `target/` output. The core owns models, transactions, persistence, credentials, checks and safe logs without Tauri or terminal dependencies. Desktop commands keep their protocol, window, theme and updater adapters. Non-graphical catalog fields come from `crates/key-switch-core/provider-catalog.json`; Vue maintains image mappings.
+
+Build and run from the repository root:
+
+```bash
+cargo run -p key-switch-tui --locked
+cargo build -p key-switch-tui --release --locked
+cargo test -p key-switch-core -p key-switch-tui --locked
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+node scripts/check-versions.mjs
+```
+
+The TUI supports local desktop terminals on Windows x64 and Linux x64. Building it does not require WebView. Linux runtime requires an available, unlocked Secret Service and X11 / Wayland clipboard; Windows uses Credential Manager. Both retain the keyring v1 native default backend and service `com.app.key-switch`, with no plaintext fallback. SSH, headless Linux, WSL, macOS TUI, image editing, settings editing and automatic updates are unsupported. arboard enables `wayland-data-control`; the compositor needs this protocol or a working XWayland clipboard. The clipboard connection stays alive during the session; retention after exit depends on the desktop clipboard manager.
+
+The Windows MSVC TUI build requires the Microsoft Visual C++ x64 runtime (including `VCRUNTIME140.dll`); the standalone archive does not bundle a runtime installer.
+
+Paths match Tauri: `com.app.key-switch` under Windows Roaming AppData, or `$XDG_DATA_HOME/com.app.key-switch` on Linux, falling back to `~/.local/share/com.app.key-switch`. The core accepts an explicit directory; the TUI uses the same dirs resolver as Tauri and has no separate data-directory option.
+
+Startup acquires an OS nonblocking exclusive lock on `key-switch.lock` before settings, business recovery or credentials. Desktop sets `create: false` and creates its window after acquiring the lock; TUI enters raw mode afterward. A second instance displays a localized message and exits; unavailable locks cause startup failure. Never remove, truncate or replace the lock file. The OS releases the lock on exit or crash. **Old desktop builds do not participate: upgrade and close old instances before using the TUI.**
+
+Business operations use one process transaction mutex; settings and logs retain separate locks. Network checks run outside transactions and merge only matching Key identities, credential references, provider configuration and in-memory check generations. Late results preserve remarks, additions, deletions and ordering. Newer checks, credential replacements and configuration changes invalidate older checks. Reordering requires an exact permutation of all current provider IDs.
+
+Metadata uses synchronized temporary files and backup replacement. Recovery validates JSON, rejects a corrupt main file and restores a complete temporary file or backup when the main file is missing. Unix also synchronizes directories; Windows synchronizes files and uses same-directory renames without promising directory-entry durability after power loss. `key-switch-transaction.json` contains only before/after metadata and credential IDs. Secrets and backups remain in the keyring. Creation and replacement use random credential IDs while retaining old Key IDs. Deletion and replacement stage keyring backups, attempt rollback on failure and recover or clean up after interruption based on committed metadata. Failed rollback or recovery returns a specific error, preserves recovery files and blocks further business operations. Do not delete recovery files manually. Permanent keyring failure prevents guaranteed automatic recovery.
+
+Keys: arrows select, Tab / Enter switches panes, `n` creates, `e` edits, `d` confirms deletion, `b` adds built-ins, `/` searches, `s` toggles session Key sorting by remark, `Alt+↑/↓` persists provider order (disabled during search), `c` copies, `t` checks a Key, `a` checks the provider, `r` reloads, and `q` / Escape exits or clears search. Forms use Tab / arrows for fields, left/right for cursor movement, Enter to save and Escape to cancel. Secret fields are hidden and confined to temporary input/operation buffers. Copy returns only completion status. Background jobs disable mutations while busy. The TUI reads the shared language preference for Simplified Chinese, Traditional Chinese, English and Japanese without modifying theme or other settings. RAII and a panic hook restore the terminal; forced external termination cannot guarantee destructors run.
+
+CI retains desktop/navigation checks and adds standalone Windows/Linux core and TUI checks without WebView. Release preparation creates one draft; desktop platforms remain and TUI archives are `key-switch-tui-v<version>-windows-x64.zip` and `key-switch-tui-v<version>-linux-x64.tar.gz`, with no TUI updater manifest. The project remains at `1.1.0`; update all version locations before the actual release. Feature branches do not publish directly.
+
+Automated tests use mock credentials and child processes without accessing real credentials. Windows 10/11 and Linux X11/Wayland still require real validation of alternating frontends, keyrings, clipboard, Chinese input, all four languages and terminal restoration. Compilation and mocks do not replace platform acceptance.
+
+Run `node scripts/sync-native-errors.mjs` to generate native error resources from all four desktop translations; `npm run test:frontend` checks parity.

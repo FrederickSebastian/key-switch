@@ -166,17 +166,26 @@ impl Core {
             business: Mutex::new(()),
             generations: Mutex::new(HashMap::new()),
         };
-        let _guard = core.transaction()?;
+        let _guard = core.read_transaction()?;
         load_data(&core)?;
         drop(_guard);
         Ok(core)
     }
     pub(super) fn transaction(&self) -> Result<MutexGuard<'_, ()>, CommandError> {
+        self.lock_transaction(false)
+    }
+    pub(super) fn read_transaction(&self) -> Result<MutexGuard<'_, ()>, CommandError> {
+        self.lock_transaction(true)
+    }
+    fn lock_transaction(
+        &self,
+        allow_deferred_cleanup: bool,
+    ) -> Result<MutexGuard<'_, ()>, CommandError> {
         let guard = self
             .business
             .lock()
             .map_err(|_| CommandError::from("TRANSACTION_UNAVAILABLE"))?;
-        self.recover_credentials()?;
+        self.recover_credentials(allow_deferred_cleanup)?;
         Ok(guard)
     }
     fn bump(&self, id: &str) -> Result<u64, CommandError> {
@@ -229,17 +238,38 @@ impl Core {
                 self.credentials.delete(id)?;
             }
         }
+        self.finish_cleanup(journal)
+    }
+    fn finish_cleanup(&self, journal: &CredentialJournal) -> Result<(), CommandError> {
+        // Business metadata and credentials are already consistent at this point.
         // Mark cleanup before deleting backups; retries no longer need their values.
         let mut cleaned = journal.clone();
         cleaned.cleaned = true;
         atomic_save(&self.journal_path(), &cleaned)
             .map_err(|_| CommandError::from("RECOVERY_FAILED"))?;
+        self.remove_cleanup_files(journal)
+    }
+    fn remove_cleanup_files(&self, journal: &CredentialJournal) -> Result<(), CommandError> {
         for (_, backup) in &journal.retired {
             self.credentials.delete(backup)?;
         }
         self.clear_journal()
     }
-    fn recover_credentials(&self) -> Result<(), CommandError> {
+    fn cleanup_result(
+        &self,
+        result: Result<(), CommandError>,
+        allow_deferred_cleanup: bool,
+    ) -> Result<(), CommandError> {
+        if result.is_err() {
+            if !allow_deferred_cleanup {
+                return Err("RECOVERY_FAILED".into());
+            }
+            // Keep the journal for a later retry. Never log credential values or IDs.
+            let _ = append_log(self, "WARN", "credential_cleanup_deferred", "retry=pending");
+        }
+        Ok(())
+    }
+    fn recover_credentials(&self, allow_deferred_cleanup: bool) -> Result<(), CommandError> {
         let path = self.journal_path();
         recover_json::<CredentialJournal>(&path)
             .map_err(|_| CommandError::from("RECOVERY_FAILED"))?;
@@ -251,20 +281,26 @@ impl Core {
         )
         .map_err(|_| CommandError::from("RECOVERY_FAILED"))?;
         if journal.cleaned {
-            for (_, backup) in &journal.retired {
-                self.credentials
-                    .delete(backup)
-                    .map_err(|_| CommandError::from("RECOVERY_FAILED"))?;
-            }
-            return self.clear_journal();
+            return self
+                .cleanup_result(self.remove_cleanup_files(&journal), allow_deferred_cleanup);
         }
         let current = load_data(self)?;
         let committed = journal.ready && current == journal.after;
         if !committed && current != journal.before {
             return Err("RECOVERY_FAILED".into());
         }
-        self.cleanup(&journal, committed)
-            .map_err(|_| CommandError::from("RECOVERY_FAILED"))
+        if committed {
+            // Retiring credentials is business work: failure must still block recovery.
+            for (id, _) in &journal.retired {
+                self.credentials
+                    .delete(id)
+                    .map_err(|_| CommandError::from("RECOVERY_FAILED"))?;
+            }
+            self.cleanup_result(self.finish_cleanup(&journal), allow_deferred_cleanup)
+        } else {
+            self.cleanup(&journal, false)
+                .map_err(|_| CommandError::from("RECOVERY_FAILED"))
+        }
     }
     fn commit(
         &self,
@@ -312,8 +348,9 @@ impl Core {
             }
             return Err(error);
         }
-        self.cleanup(&journal, true)
-            .map_err(|_| CommandError::from("RECOVERY_FAILED"))
+        // Do not report a committed operation as failed because housekeeping failed.
+        // Reads may show committed state; new mutations must finish recovery first.
+        self.cleanup_result(self.finish_cleanup(&journal), true)
     }
 }
 #[derive(Clone, Serialize, Deserialize)]

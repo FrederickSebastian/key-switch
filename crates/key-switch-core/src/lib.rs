@@ -960,7 +960,7 @@ pub fn clear_logs(app: &Core) -> Result<(), CommandError> {
     Ok(())
 }
 pub fn list_providers(app: &Core) -> Result<Vec<ProviderSummary>, CommandError> {
-    let _guard = app.transaction()?;
+    let _guard = app.read_transaction()?;
     load_data(app)?
         .providers
         .iter()

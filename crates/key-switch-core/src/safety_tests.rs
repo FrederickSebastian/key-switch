@@ -172,6 +172,143 @@ fn metadata_failure_rolls_back_new_credential() {
     assert!(list_providers(&app).unwrap()[0].keys.is_empty());
     assert!(credentials.values.lock().unwrap().is_empty());
 }
+
+#[test]
+fn committed_changes_remain_visible_when_cleanup_fails() {
+    use std::sync::atomic::AtomicBool;
+
+    #[derive(Clone, Copy, PartialEq)]
+    enum Fault {
+        Marker,
+        Backup,
+        Journal,
+    }
+    struct CleanupFault {
+        inner: Arc<MockCredentials>,
+        directory: PathBuf,
+        fault: Fault,
+        enabled: AtomicBool,
+    }
+    impl CleanupFault {
+        fn block_journal(&self) -> Result<(), CommandError> {
+            fs::create_dir_all(self.directory.join("key-switch-transaction.json.tmp"))
+                .map_err(|_| CommandError::from("RECOVERY_FAILED"))
+        }
+    }
+    impl Credentials for CleanupFault {
+        fn get(&self, id: &str) -> Result<String, CommandError> {
+            self.inner.get(id)
+        }
+        fn set(&self, id: &str, value: &str) -> Result<(), CommandError> {
+            self.inner.set(id, value)?;
+            if self.enabled.load(Ordering::SeqCst)
+                && self.fault == Fault::Marker
+                && !id.starts_with("recovery-")
+            {
+                self.block_journal()?;
+            }
+            Ok(())
+        }
+        fn delete(&self, id: &str) -> Result<(), CommandError> {
+            if self.enabled.load(Ordering::SeqCst)
+                && self.fault == Fault::Backup
+                && id.starts_with("recovery-")
+            {
+                return Err("系统密钥库不可用".into());
+            }
+            self.inner.delete(id)?;
+            if self.enabled.load(Ordering::SeqCst)
+                && ((self.fault == Fault::Marker && !id.starts_with("recovery-"))
+                    || (self.fault == Fault::Journal && id.starts_with("recovery-")))
+            {
+                self.block_journal()?;
+            }
+            Ok(())
+        }
+    }
+
+    for operation in ["create", "replace", "delete_key", "delete_provider"] {
+        for fault in [Fault::Marker, Fault::Backup, Fault::Journal] {
+            // Creation has no retired credential or backup to delete.
+            if operation == "create" && fault != Fault::Marker {
+                continue;
+            }
+            let (dir, credentials, app) = fixture();
+            let key = add_key(&app);
+            drop(app);
+            let failing = Arc::new(CleanupFault {
+                inner: credentials.clone(),
+                directory: dir.path().into(),
+                fault,
+                enabled: AtomicBool::new(false),
+            });
+            let app =
+                Core::new(InstanceLock::acquire(dir.path()).unwrap(), failing.clone()).unwrap();
+            failing.enabled.store(true, Ordering::SeqCst);
+            match operation {
+                "create" => {
+                    add_key(&app);
+                }
+                "replace" => {
+                    update_api_key(
+                        &app,
+                        UpdateKeyInput {
+                            id: key.id.clone(),
+                            remark: "committed remark".into(),
+                            value: "replacement-fixture".into(),
+                        },
+                    )
+                    .unwrap();
+                }
+                "delete_key" => delete_api_key(&app, key.id.clone()).unwrap(),
+                _ => delete_provider(&app, "p".into()).unwrap(),
+            }
+            let providers = list_providers(&app).unwrap();
+            match operation {
+                "create" => assert_eq!(providers[0].keys.len(), 2),
+                "replace" => {
+                    assert_eq!(providers[0].keys[0].remark, "committed remark");
+                    assert_eq!(
+                        providers[0].keys[0].masked_value,
+                        mask("replacement-fixture")
+                    );
+                }
+                "delete_key" => assert!(providers[0].keys.is_empty()),
+                _ => assert!(providers.is_empty()),
+            }
+            let path = dir.path().join("key-switch-transaction.json");
+            let journal = fs::read(&path).unwrap();
+            assert_eq!(
+                reorder_providers(&app, vec![]).unwrap_err().code,
+                "RECOVERY_FAILED"
+            );
+            assert_eq!(fs::read(&path).unwrap(), journal);
+
+            // Restart must still show committed state while cleanup remains unavailable.
+            drop(app);
+            let app =
+                Core::new(InstanceLock::acquire(dir.path()).unwrap(), failing.clone()).unwrap();
+            let restarted = list_providers(&app).unwrap();
+            assert_eq!(restarted.len(), providers.len());
+            assert_eq!(
+                restarted.iter().map(|p| p.keys.len()).sum::<usize>(),
+                providers.iter().map(|p| p.keys.len()).sum::<usize>()
+            );
+            failing.enabled.store(false, Ordering::SeqCst);
+            let blocked = dir.path().join("key-switch-transaction.json.tmp");
+            if blocked.is_dir() {
+                fs::remove_dir(blocked).unwrap();
+            }
+            let ids = providers.iter().map(|p| p.id.clone()).collect();
+            reorder_providers(&app, ids).unwrap();
+            assert!(!path.exists());
+            assert_eq!(
+                credentials.values.lock().unwrap().len(),
+                providers.iter().map(|p| p.keys.len()).sum::<usize>()
+            );
+        }
+    }
+}
 #[test]
 fn interrupted_metadata_replacement_validates_candidates() {
     let dir = tempfile::tempdir().unwrap();

@@ -206,12 +206,31 @@ struct App {
     search: String,
     sorted: bool,
     modal: Option<Modal>,
+    pending_form: Option<Form>,
     busy: bool,
     failed: bool,
     status: String,
     locale: Locale,
 }
 impl App {
+    fn apply_reply(&mut self, reply: Reply) {
+        self.busy = false;
+        let form = self.pending_form.take();
+        match reply {
+            Ok(providers) => {
+                self.failed = false;
+                self.providers = providers;
+                self.reconcile();
+                self.status = i18n::text(self.locale, "ready").into();
+            }
+            Err(error) => {
+                self.fail(error.code);
+                if let Some(form) = form {
+                    self.modal = Some(Modal::Form(form));
+                }
+            }
+        }
+    }
     fn fail(&mut self, code: &str) {
         self.failed = true;
         self.status = i18n::error(self.locale, code);
@@ -373,18 +392,19 @@ impl App {
         }
     }
 }
-fn submit(mut form: Form) -> Result<Job, CommandError> {
-    let mut take = |index: usize| {
+fn submit(form: &Form) -> Result<Job, CommandError> {
+    let take = |index: usize| {
         form.fields
-            .get_mut(index)
-            .map(|f| std::mem::take(&mut *f.value))
+            .get(index)
+            .map(|f| f.value.to_string())
             .unwrap_or_default()
     };
-    match form.kind {
+    match &form.kind {
         FormKind::Key(provider_id, id) => {
+            let provider_id = provider_id.clone();
             let remark = take(0);
             let value = take(1);
-            Ok(if let Some(id) = id {
+            Ok(if let Some(id) = id.clone() {
                 Job::UpdateKey(UpdateKeyInput { id, remark, value })
             } else {
                 Job::CreateKey(CreateKeyInput {
@@ -415,7 +435,7 @@ fn submit(mut form: Form) -> Result<Job, CommandError> {
             } else {
                 Some(url)
             };
-            Ok(if let Some(id) = id {
+            Ok(if let Some(id) = id.clone() {
                 Job::UpdateProvider(UpdateProviderInput {
                     id,
                     name,
@@ -453,9 +473,19 @@ fn handle(app: &mut App, event: KeyEvent, sender: &mpsc::Sender<Job>) -> bool {
                 match event.code {
                     KeyCode::Esc => return false,
                     KeyCode::Enter => {
-                        match submit(form) {
-                            Ok(job) => app.send(sender, job),
-                            Err(e) => app.fail(e.code),
+                        match submit(&form) {
+                            Ok(job) => {
+                                app.send(sender, job);
+                                if app.busy {
+                                    app.pending_form = Some(form);
+                                } else {
+                                    app.modal = Some(Modal::Form(form));
+                                }
+                            }
+                            Err(e) => {
+                                app.fail(e.code);
+                                app.modal = Some(Modal::Form(form));
+                            }
                         };
                         return false;
                     }
@@ -821,6 +851,7 @@ fn run(core: Arc<Core>, locale: Locale) -> io::Result<()> {
             search: String::new(),
             sorted: false,
             modal: None,
+            pending_form: None,
             busy: false,
             failed: false,
             status: String::new(),
@@ -836,16 +867,7 @@ fn run(core: Arc<Core>, locale: Locale) -> io::Result<()> {
                         return Err(io::Error::other("background task failed"))
                     }
                 };
-                app.busy = false;
-                match reply {
-                    Ok(providers) => {
-                        app.failed = false;
-                        app.providers = providers;
-                        app.reconcile();
-                        app.status = i18n::text(locale, "ready").into();
-                    }
-                    Err(e) => app.fail(e.code),
-                }
+                app.apply_reply(reply);
             }
             terminal.draw(|frame| draw(frame, &app))?;
             if event::poll(Duration::from_millis(50))? {
@@ -945,6 +967,127 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn app_with_form(form: Form) -> App {
+        App {
+            providers: vec![],
+            provider_id: None,
+            key_id: None,
+            keys_pane: false,
+            search: String::new(),
+            sorted: false,
+            modal: Some(Modal::Form(form)),
+            pending_form: None,
+            busy: false,
+            failed: false,
+            status: String::new(),
+            locale: Locale::ZhCn,
+        }
+    }
+
+    #[test]
+    fn invalid_validation_mode_keeps_form_and_can_be_corrected() {
+        let form = Form {
+            kind: FormKind::Provider(None),
+            fields: vec![
+                Field::new("name", "我的供应商".into(), false),
+                Field::new("url", "https://example.com".into(), false),
+                Field::new("validation", "bearre".into(), false),
+                Field::new("endpoint", "https://example.com/check".into(), false),
+                Field::new("header", "X-Example".into(), false),
+            ],
+            active: 2,
+        };
+        let original: Vec<_> = form
+            .fields
+            .iter()
+            .map(|f| (f.value.to_string(), f.cursor))
+            .collect();
+        let mut app = app_with_form(form);
+        let (tx, rx) = mpsc::channel();
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(!handle(&mut app, enter, &tx));
+        assert!(app.failed && !app.busy);
+        assert!(matches!(rx.try_recv(), Err(mpsc::TryRecvError::Empty)));
+        let Some(Modal::Form(form)) = &mut app.modal else {
+            panic!("validation failure discarded the form");
+        };
+        assert_eq!(form.active, 2);
+        assert_eq!(
+            form.fields
+                .iter()
+                .map(|f| (f.value.to_string(), f.cursor))
+                .collect::<Vec<_>>(),
+            original
+        );
+        form.fields[2] = Field::new("validation", "bearer".into(), false);
+        handle(&mut app, enter, &tx);
+        assert!(app.busy && app.modal.is_none() && app.pending_form.is_some());
+        let Job::CreateProvider(input) = rx.try_recv().unwrap() else {
+            panic!("corrected form did not submit provider creation");
+        };
+        assert_eq!(input.name, "我的供应商");
+        assert_eq!(input.platform_url.as_deref(), Some("https://example.com"));
+        assert!(
+            matches!(input.validation, ValidationConfig::Bearer { endpoint } if endpoint == "https://example.com/check")
+        );
+        app.apply_reply(Ok(vec![]));
+        assert!(!app.busy && !app.failed && app.pending_form.is_none() && app.modal.is_none());
+    }
+
+    #[test]
+    fn background_failure_restores_hidden_input_and_allows_retry_or_cancel() {
+        let mut app = app_with_form(Form {
+            kind: FormKind::Key("p".into(), None),
+            fields: vec![
+                Field::new("remark", "备注".into(), false),
+                Field::new("secret", "fixture-private-value".into(), true),
+            ],
+            active: 1,
+        });
+        let (tx, rx) = mpsc::channel();
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        handle(&mut app, enter, &tx);
+        drop(rx.try_recv().unwrap());
+        app.apply_reply(Err("无法写入系统密钥库".into()));
+        let Some(Modal::Form(form)) = &app.modal else {
+            panic!("background failure discarded the form");
+        };
+        assert_eq!(form.active, 1);
+        assert_eq!(&**form.fields[0].value, "备注");
+        assert_eq!(&**form.fields[1].value, "fixture-private-value");
+        assert!(form.fields[1].hidden);
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(100, 24)).unwrap();
+        terminal.draw(|frame| draw(frame, &app)).unwrap();
+        assert!(!format!("{:?}", terminal.backend().buffer()).contains("fixture-private-value"));
+        handle(&mut app, enter, &tx);
+        assert!(matches!(rx.try_recv(), Ok(Job::CreateKey(_))));
+        app.apply_reply(Err("无法保存本地数据".into()));
+        handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            &tx,
+        );
+        assert!(app.modal.is_none() && app.pending_form.is_none());
+    }
+
+    #[test]
+    fn disconnected_worker_keeps_form() {
+        let mut app = app_with_form(Form {
+            kind: FormKind::Key("p".into(), None),
+            fields: vec![Field::new("remark", "备注".into(), false)],
+            active: 0,
+        });
+        let (tx, rx) = mpsc::channel();
+        drop(rx);
+        handle(
+            &mut app,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &tx,
+        );
+        assert!(app.failed && !app.busy && app.pending_form.is_none());
+        assert!(matches!(app.modal, Some(Modal::Form(_))));
+    }
     #[test]
     fn strips_terminal_controls_and_edits_unicode() {
         assert_eq!(safe("a\u{1b}[31m\n中\u{202e}"), "a[31m中");
@@ -969,6 +1112,7 @@ mod tests {
                 fields: vec![Field::new("secret", "fixture-private-value".into(), true)],
                 active: 0,
             })),
+            pending_form: None,
             busy: false,
             failed: false,
             status: String::new(),
@@ -993,6 +1137,7 @@ mod tests {
             search: String::new(),
             sorted: false,
             modal: None,
+            pending_form: None,
             busy: false,
             failed: false,
             status: String::new(),
